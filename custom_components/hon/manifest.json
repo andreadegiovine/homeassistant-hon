@@ -12,5 +12,5 @@
     "deep-translator==1.*",
     "awsiotsdk>=1.21.0"
   ],
-  "version": "2026.7.1"
+  "version": "2026.11.1"
 }

@@ -23,6 +23,7 @@ from .const import (
     CONF_PROGRAMS_SETTINGS,
     CONF_GLOBAL_SETTINGS
 )
+from .utils import to_int
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,14 +73,15 @@ class HonDevice(CoordinatorEntity):
         if not os.path.isdir(storage_path):
             os.mkdir(storage_path)
         data_path = os.path.join(storage_path, f"{self._mac}_{key}.json")
-        if os.path.isfile(data_path):
-            os.remove(data_path)
-        with open(data_path, 'w', encoding='utf-8') as f:
+        tmp_path = data_path + ".tmp"
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(value, f, ensure_ascii=False, indent=4)
-        del self._cache[key]
+        os.replace(tmp_path, data_path)
+        self._cache[key] = value
 
     def get_storage_data(self, key: str):
-        if key in self._cache and self._cache[key]:
+        """Read from cache; the files are preloaded by async_load_storage (no I/O in the event loop)."""
+        if key in self._cache:
             return self._cache[key]
         hass_config_path = self._hass.config.path()
         storage_path = os.path.join(hass_config_path, ".storage", DOMAIN)
@@ -90,6 +92,12 @@ class HonDevice(CoordinatorEntity):
                 value = json.load(f)
         self._cache[key] = value
         return value
+
+    async def async_load_storage(self):
+        """Load programs and settings from disk in the executor."""
+        for key in (CONF_PROGRAMS, CONF_SETTINGS):
+            self._cache.pop(key, None)
+            await self._hass.async_add_executor_job(self.get_storage_data, key)
 
     def copy_dict(self, data):
         new_data = {}
@@ -122,7 +130,7 @@ class HonDevice(CoordinatorEntity):
 
     @property
     def settings(self):
-        settings = self.get_storage_data(CONF_SETTINGS)
+        settings = self.get_storage_data(CONF_SETTINGS) or {}
         stored_settings = self.get_config_data(CONF_GLOBAL_SETTINGS)
         for setting in stored_settings:
             if setting in settings:
@@ -143,7 +151,7 @@ class HonDevice(CoordinatorEntity):
 
     @property
     def programs(self):
-        programs = self.get_storage_data(CONF_PROGRAMS)
+        programs = self.get_storage_data(CONF_PROGRAMS) or {}
         stored_programs = self.get_config_data(CONF_PROGRAMS_SETTINGS)
         for program in stored_programs:
             for param in stored_programs[program]:
@@ -152,9 +160,9 @@ class HonDevice(CoordinatorEntity):
         return programs
 
     def get_program(self, key):
-        if key not in self.programs:
+        if not key:
             return None
-        return self.programs[key]
+        return self.programs.get(key)
 
     def get_program_params(self, key):
         data = self.get_program(key)
@@ -192,7 +200,7 @@ class HonDevice(CoordinatorEntity):
     def current_program_params(self):
         if not self.current_program_name:
             return {}
-        params = {**self.get_program_params(self.current_program_name)}
+        params = dict(self.get_program_params(self.current_program_name) or {})
         for param in params:
             if param in ["delayTime", "lang", "waterHard"]:
                 setting = self.get_setting(param)
@@ -236,11 +244,11 @@ class HonDevice(CoordinatorEntity):
             program_options = self.all_params[program_name]
             for option_name in program_options:
                 option = program_options[option_name]
-                if ("type" in option) and (not option_name in sensors[option["type"]]):
+                if option.get("type") in sensors and option_name not in sensors[option["type"]]:
                     sensors[option["type"]].append(option_name)
         for setting in self.settings:
             option = self.settings[setting]
-            if "type" in option:
+            if option.get("type") in sensors and setting not in sensors[option["type"]]:
                 sensors[option["type"]].append(setting)
         return sensors
 
@@ -274,9 +282,13 @@ class HonDevice(CoordinatorEntity):
         await self._hass.services.async_call(NOTIFICATION_DOMAIN, SERVICE_PERSISTENT_NOTIFICATION, data)
 
     async def get_translation(self, string):
-        translator = GoogleTranslator(source='auto', target='it')
-        translated = await self._hass.async_add_executor_job(translator.translate, string)
-        return translated
+        try:
+            translator = GoogleTranslator(source='auto', target='it')
+            translated = await self._hass.async_add_executor_job(translator.translate, string)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Translation failed (%s), using original description", err)
+            return string
+        return translated or string
 
     def get_param_config(self, param, configs, stored_configs = None):
         result = {}
@@ -327,20 +339,26 @@ class HonDevice(CoordinatorEntity):
                 if "remainingTimes" in program_attr:
                     program_data["timing"] = program_attr["remainingTimes"]
                 programs[program_name] = program_data
-            self.set_storage_data("programs", programs)
-            self.set_storage_data("settings", settings)
+            if not programs:
+                _LOGGER.warning("No programs found for %s", self._mac)
+                return
+            await self._hass.async_add_executor_job(self.set_storage_data, CONF_PROGRAMS, programs)
+            await self._hass.async_add_executor_job(self.set_storage_data, CONF_SETTINGS, settings)
 
-        current_program = list(programs)[0]
-        if self.current_program_name:
-            current_program = self.current_program_name
-        self.set_current_program(current_program)
+        current_program = self.current_program_name
+        if not current_program or current_program not in programs:
+            current_program = list(programs)[0]
+        if current_program != self.current_program_name:
+            self.set_current_program(current_program)
 
     async def update_data(self, data):
         attributes = {}
 
-        _LOGGER.info(data)
+        _LOGGER.debug("update_data %s: %s", self._mac, data)
 
         for name, values in data.items():
+            if not isinstance(values, dict) or "parNewVal" not in values:
+                continue
             attributes[name] = values["parNewVal"]
 
             if name == "prPhase":
@@ -367,7 +385,8 @@ class HonDevice(CoordinatorEntity):
                     if attributes[name] in ["8","12","17"]: # Unknown
                         attributes[name] = "8"
 
-        if "machMode" in attributes and int(attributes["machMode"]) == 7 and self.get_data("machMode") != None and int(self.get_data("machMode")) == 2:
+        previous_mode = to_int(self.get_data("machMode"))
+        if to_int(attributes.get("machMode")) == 7 and previous_mode == 2:
             await self.send_notify(self._translations.get("component.hon.entity.binary_sensor.notify.state.finished", "finished"))
             self._manually_detergent_notify = False
             self._manually_softener_notify = False
@@ -375,7 +394,8 @@ class HonDevice(CoordinatorEntity):
         softener_remaining_time = 20
         if self.get_yaml_config(CONF_SOFTENER_REMAINING_TIME):
             softener_remaining_time = self.get_yaml_config(CONF_SOFTENER_REMAINING_TIME)
-        if self._manually_softener_notify and self.get_data("machMode") != None and int(self.get_data("machMode")) == 2 and "remainingTimeMM" in attributes and int(attributes["remainingTimeMM"]) < softener_remaining_time:
+        remaining = to_int(attributes.get("remainingTimeMM"))
+        if self._manually_softener_notify and previous_mode == 2 and remaining is not None and remaining < softener_remaining_time:
             await self.send_pause_resume()
             await self.send_notify(self._translations.get("component.hon.entity.binary_sensor.notify.state.autosoftener_manually", "autosoftener_manually"))
             self._manually_softener_notify = False
@@ -385,11 +405,14 @@ class HonDevice(CoordinatorEntity):
 
     async def get_status(self):
         result = await self._hon.get_status(self)
-        data = result.pop("shadow", {'NA': 0}).get("parameters")
-        data["lastConnEvent"] = {
-            "parNewVal": result["lastConnEvent"]["category"]
-        }
-        await self.update_data(data)
+        if not result:
+            return
+        data = dict((result.get("shadow") or {}).get("parameters") or {})
+        connection = (result.get("lastConnEvent") or {}).get("category")
+        if connection:
+            data["lastConnEvent"] = {"parNewVal": connection}
+        if data:
+            await self.update_data(data)
 
     async def send_start(self):
         if (not self.current_program_name) or (not self.current_program_settings):

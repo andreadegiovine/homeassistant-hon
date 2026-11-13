@@ -2,8 +2,8 @@ import logging
 import voluptuous as vol
 
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import translation
 
 from .const import DOMAIN, PLATFORMS, CONF_MAC, CONF_DISABLED_PROGRAMS, CONF_SOFTENER_REMAINING_TIME
@@ -29,19 +29,11 @@ CONFIG_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
-def update_sensor(hass, device_id, mac, sensor_name, state):
-    entity_reg  = er.async_get(hass)
-    entries     = er.async_entries_for_device(entity_reg, device_id)
-
-    for entry in entries:
-        if( entry.unique_id == mac + '_' + sensor_name):
-            inputStateObject = hass.states.get(entry.entity_id)
-            hass.states.async_set(entry.entity_id, state, inputStateObject.attributes)
-
-
 async def async_setup_entry(hass, entry):
     hon = HonConnection(hass, entry)
-    await hon.async_authorize()
+    if not await hon.async_authorize():
+        await hon.async_close()
+        raise ConfigEntryNotReady("Unable to connect to hOn")
 
     _LOGGER.debug(f"Appliances: {hon.appliances}")
 
@@ -52,16 +44,33 @@ async def async_setup_entry(hass, entry):
 
     for appliance in hon.appliances:
         coordinator = hon.async_get_coordinator(appliance)
-        coordinator.device = HonDevice(entry, hon, coordinator, appliance, translations)
-        # await coordinator.device.get_status()
-        # await coordinator.async_config_entry_first_refresh()
-        # await coordinator.device.get_programs()
+        device = HonDevice(entry, hon, coordinator, appliance, translations)
+        coordinator.device = device
+        await device.async_load_storage()
+        # Programs must be known before the platforms create select/switch entities
+        try:
+            await device.get_programs()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Unable to load programs for %s", device._mac)
+        try:
+            await device.get_status()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Unable to load status for %s", device._mac)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     await hon.start_mqtt()
 
     return True
+
+
+async def async_unload_entry(hass, entry):
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        hon = hass.data.get(DOMAIN, {}).pop(entry.unique_id, None)
+        if hon is not None:
+            await hon.async_shutdown()
+    return unload_ok
 
 
 async def async_setup(hass, config):

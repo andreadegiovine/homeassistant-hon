@@ -5,12 +5,12 @@
     "@andreadegiovine"
   ],
   "config_flow": true,
-  "documentation": "https://github.com/andreadegiovine/hon",
-  "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/andreadegiovine/hon/issues",
+  "documentation": "https://github.com/andreadegiovine/homeassistant-hon",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/andreadegiovine/homeassistant-hon/issues",
   "requirements": [
     "deep-translator==1.*",
-    "awsiot<=0.1.3"
+    "awsiotsdk>=1.21.0"
   ],
   "version": "2026.7.1"
 }

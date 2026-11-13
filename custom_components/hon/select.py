@@ -66,7 +66,7 @@ class HonDelaySelect(HonBaseSelect):
 
     async def async_select_option(self, option: str) -> None:
         self._device._delay_time = option
-        await self.coordinator.async_refresh()
+        self.coordinator.async_update_listeners()
 
     def coordinator_update(self):
         if not self.available:
@@ -95,7 +95,7 @@ class HonProgramSelect(HonBaseSelect):
 
     async def async_select_option(self, option: str) -> None:
         self._device.set_current_program(option)
-        await self.coordinator.async_refresh()
+        self.coordinator.async_update_listeners()
 
     def coordinator_update(self):
         if not self.available:

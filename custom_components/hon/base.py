@@ -19,6 +19,7 @@ class HonBaseCoordinator(DataUpdateCoordinator):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=hon._entry,
             name="hOn Device"
         )
         self._hon       = hon
@@ -52,12 +53,6 @@ class HonBaseCoordinator(DataUpdateCoordinator):
     @device.setter
     def device(self, value):
         self._device = value
-
-    async def async_set(self, parameters):
-        await self._hon.async_set(self._mac, self._type_name, parameters)
-
-    def get(self, key):
-        return self.data.get(key, "")
 
     @property
     def device_info(self):
@@ -133,8 +128,11 @@ class HonBaseSensor(HonBaseEntity):
     def _handle_coordinator_update(self):
         if self._coordinator.data is False:
             return
-        self.coordinator_update()
-        self.async_write_ha_state()
+        try:
+            self.coordinator_update()
+            self.async_write_ha_state()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Error updating %s", self.entity_id)
 
     def coordinator_update(self):
         """Update entity state"""
@@ -194,8 +192,11 @@ class HonBaseBinarySensor(HonBaseEntity, BinarySensorEntity):
     def _handle_coordinator_update(self):
         if self._coordinator.data is False:
             return
-        self.coordinator_update()
-        self.async_write_ha_state()
+        try:
+            self.coordinator_update()
+            self.async_write_ha_state()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Error updating %s", self.entity_id)
 
     def coordinator_update(self):
         """Update entity state"""

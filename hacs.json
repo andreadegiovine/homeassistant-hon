@@ -1,6 +1,6 @@
 {
     "name": "hOn (WM, TD)",
-    "homeassistant": "2022.6.0",
+    "homeassistant": "2024.12.0",
     "render_readme": true,
     "zip_release": true,
     "filename": "hon.zip"

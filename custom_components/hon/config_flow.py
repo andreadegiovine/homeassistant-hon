@@ -17,7 +17,6 @@ class HonFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
     MINOR_VERSION = 3
-    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
     def __init__(self):
         self._email     = None

@@ -6,7 +6,7 @@ from homeassistant.helpers import translation
 
 from .const import DOMAIN, SENSORS_DEFAULT
 from .base import HonBaseBinarySensor
-from .utils import get_datetime
+from .utils import get_datetime, to_int
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,15 +41,13 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
             )
             appliances.extend([HonBaseBinarySensor(coordinator, appliance, description, translations)])
 
-        await coordinator.async_request_refresh()
-
     async_add_entities(appliances)
 
 
 class HonDevice(HonBaseBinarySensor):
     def get_program_duration(self):
         program_data = self._device.get_program(self._device.current_program_name)
-        if "timing" not in program_data:
+        if not program_data or "timing" not in program_data:
             return None
         timing = 0
         timing_data = program_data["timing"]
@@ -63,7 +61,7 @@ class HonDevice(HonBaseBinarySensor):
                     else:
                         timing = timing + int(timing_data[option]["default"])
                 elif option == "steamLevel":
-                    timing = timing + int(timing_data["steamLevel"]["+steamType"][option_setting])
+                    timing = timing + (to_int(timing_data["steamLevel"].get("+steamType", {}).get(option_setting)) or 0)
                 else:
                     for phase in timing_data[option]:
                         if option_setting in timing_data[option][phase]:
@@ -120,32 +118,26 @@ class HonDevice(HonBaseBinarySensor):
                 attributes["spin_speed"] = str(self._device.get_data("spinSpeed")) + " rpm"
 
 
-            if self._device.get_data("remainingTimeMM"):
-                delay = int(self._device.get_data("delayTime"))
-                remaining = int(self._device.get_data("remainingTimeMM"))
-                value = None
+            remaining = to_int(self._device.get_data("remainingTimeMM"))
+            if remaining is not None:
+                delay = to_int(self._device.get_data("delayTime"), 0)
+                remaining_text = None
+                end_time = None
                 if remaining > 0:
-                    value = get_datetime().replace(second=0) + timedelta(minutes=delay + remaining)
-
-                    if remaining//60 > 0:
-                        hours = remaining//60
-                        minutes = remaining%60
-                        if minutes < 10:
-                            minutes = "0" + str(minutes)
-                        remaining = str(hours) + ":" + str(minutes)
+                    end_time = (get_datetime().replace(second=0, microsecond=0) + timedelta(minutes=delay + remaining)).strftime("%H:%M")
+                    if remaining // 60 > 0:
+                        remaining_text = f"{remaining // 60}:{remaining % 60:02d}"
                     else:
-                        remaining = str(remaining) + " min"
-                else:
-                    remaining: None
+                        remaining_text = f"{remaining} min"
 
-                attributes["remaining_time"] = remaining
-                attributes["end_time"] = value.strftime("%H:%M")
+                attributes["remaining_time"] = remaining_text
+                attributes["end_time"] = end_time
 
         if self._device.current_program_name:
             translation_path = f"component.hon.entity.select.{self._coordinator.device._type_name.lower()}_program.state.{self._device.current_program_name}"
             attributes["program_name"] = self._translations.get(translation_path, self._device.current_program_name)
 
-            attributes["program_description"] = self._device.get_program(self._device.current_program_name)["info"]
+            attributes["program_description"] = (self._device.get_program(self._device.current_program_name) or {}).get("info")
             attributes["program_duration"] = self.get_program_duration()
 
             params = self._device.current_program_settings
